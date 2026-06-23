@@ -88,7 +88,7 @@
 
 ## 调用流程
 
-### 读文件：`cat /tmp/magic/docs/readme.txt`
+### 读文件：`cat /tmp/minifs/docs/readme.txt`
 
 ```
 cat docs/readme.txt
@@ -109,7 +109,7 @@ READ ino=4 off=0    ──→  读 staged[4] 或 readBlobs() → 返回字节
 RELEASE ino=4       ──→  关闭文件句柄
 ```
 
-### 写文件：`echo "hello" > /tmp/magic/foo.txt`
+### 写文件：`echo "hello" > /tmp/minifs/foo.txt`
 
 ```
 echo "hello" > foo.txt
@@ -135,7 +135,7 @@ FLUSH ino=5         ──→  putBlob("hello") 写新 blob
 RELEASE ino=5       ──→  关闭
 ```
 
-### 创建目录：`mkdir /tmp/magic/docs`
+### 创建目录：`mkdir /tmp/minifs/docs`
 
 ```
 MKDIR "docs"
@@ -148,7 +148,7 @@ MKDIR "docs"
 commitMetadata()  ──→  原子更新 metadata.json
 ```
 
-### 删除目录：`rmdir /tmp/magic/docs`
+### 删除目录：`rmdir /tmp/minifs/docs`
 
 ```
 RMDIR "docs"
@@ -247,24 +247,24 @@ EntryTimeout: time.Second   // 目录项缓存 1s
 ```bash
 go build -o mini-fs .
 
-mkdir -p /tmp/magic
-./mini-fs /tmp/magic /tmp/minifs-store
+mkdir -p /tmp/minifs
+./mini-fs /tmp/minifs /tmp/minifs-store
 ```
 
 另开终端：
 
 ```bash
-ls -l /tmp/magic
-cat /tmp/magic/hello.txt
-echo "remember the milk" > /tmp/magic/notes.txt
-mkdir /tmp/magic/docs
-echo "nested file" > /tmp/magic/docs/readme.txt
-cat /tmp/magic/docs/readme.txt
-ls /tmp/magic/docs
-mv /tmp/magic/docs/readme.txt /tmp/magic/top.txt
-rmdir /tmp/magic/docs
-chmod 755 /tmp/magic/notes.txt
-rm /tmp/magic/top.txt
+ls -l /tmp/minifs
+cat /tmp/minifs/hello.txt
+echo "remember the milk" > /tmp/minifs/notes.txt
+mkdir /tmp/minifs/docs
+echo "nested file" > /tmp/minifs/docs/readme.txt
+cat /tmp/minifs/docs/readme.txt
+ls /tmp/minifs/docs
+mv /tmp/minifs/docs/readme.txt /tmp/minifs/top.txt
+rmdir /tmp/minifs/docs
+chmod 755 /tmp/minifs/notes.txt
+rm /tmp/minifs/top.txt
 cat /tmp/minifs-store/metadata.json
 ```
 
@@ -272,9 +272,9 @@ cat /tmp/minifs-store/metadata.json
 
 ```bash
 # macOS
-umount /tmp/magic
+umount /tmp/minifs
 # Linux
-fusermount3 -u /tmp/magic
+fusermount3 -u /tmp/minifs
 ```
 
 ## 代码结构

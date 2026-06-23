@@ -8,7 +8,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  用户程序 (cat, echo, ls, rm, mv)                        │
+│  用户程序 (cat, echo, ls, rm, mv, mkdir, rmdir)          │
 └────────────────────────┬────────────────────────────────┘
                          │ 系统调用
 ┌────────────────────────▼────────────────────────────────┐
@@ -32,7 +32,7 @@
 
 ```
 /tmp/minifs-store/
-├── metadata.json          # 文件名 → inode → blob 的索引
+├── metadata.json          # inode 树形索引（目录 + 文件）
 └── blobs/
     └── blob-000000000001  # 文件内容（不可变，每次写入生成新 blob）
 ```
@@ -41,16 +41,46 @@
 
 ```json
 {
-  "next_inode": 4,
-  "next_blob": 3,
+  "next_inode": 5,
+  "next_blob": 2,
+  "root_ino": 1,
   "entries": {
-    "hello.txt": {
+    "1": {
+      "ino": 1,
+      "is_dir": true,
+      "mode": 493,
+      "mtime": 1719136000,
+      "ctime": 1719136000,
+      "children": {
+        "hello.txt": 2,
+        "docs": 3
+      }
+    },
+    "2": {
       "ino": 2,
       "mode": 420,
       "size": 35,
       "mtime": 1719136000,
       "ctime": 1719136000,
       "blobs": [{"blob": "blob-000000000001", "offset": 0, "len": 35}]
+    },
+    "3": {
+      "ino": 3,
+      "is_dir": true,
+      "mode": 493,
+      "mtime": 1719136000,
+      "ctime": 1719136000,
+      "children": {
+        "readme.txt": 4
+      }
+    },
+    "4": {
+      "ino": 4,
+      "mode": 420,
+      "size": 7,
+      "mtime": 1719136000,
+      "ctime": 1719136000,
+      "blobs": [{"blob": "blob-000000000002", "offset": 0, "len": 7}]
     }
   }
 }
@@ -58,22 +88,25 @@
 
 ## 调用流程
 
-### 读文件：`cat /tmp/magic/hello.txt`
+### 读文件：`cat /tmp/magic/docs/readme.txt`
 
 ```
-cat hello.txt
+cat docs/readme.txt
     │
     ▼
-LOOKUP "hello.txt"  ──→  在 meta.Entries 查找 → 返回 ino=2
+LOOKUP "docs"       ──→  root.Children["docs"] → ino=3
     │
     ▼
-OPEN ino=2          ──→  创建 miniFile{ino=2} 文件句柄
+LOOKUP "readme.txt" ──→  entries[3].Children["readme.txt"] → ino=4
     │
     ▼
-READ ino=2 off=0    ──→  读 staged[2] 或 readBlobs() → 返回字节
+OPEN ino=4          ──→  创建 miniFile{ino=4} 文件句柄
     │
     ▼
-RELEASE ino=2       ──→  关闭文件句柄
+READ ino=4 off=0    ──→  读 staged[4] 或 readBlobs() → 返回字节
+    │
+    ▼
+RELEASE ino=4       ──→  关闭文件句柄
 ```
 
 ### 写文件：`echo "hello" > /tmp/magic/foo.txt`
@@ -82,53 +115,87 @@ RELEASE ino=2       ──→  关闭文件句柄
 echo "hello" > foo.txt
     │
     ▼
-CREATE "foo.txt"    ──→  分配 ino=4, 写 metadata.json
+CREATE "foo.txt"    ──→  分配 ino=5, 加入 root.Children, 写 metadata
     │
     ▼
-OPEN ino=4          ──→  创建 miniFile{ino=4}
+OPEN ino=5          ──→  创建 miniFile{ino=5}
     │
     ▼
-SETATTR size=0      ──→  截断文件（staged[4] = []byte{}）
+SETATTR size=0      ──→  截断文件（staged[5] = []byte{}）
     │
     ▼
-WRITE ino=4 "hello" ──→  staged[4] = []byte("hello")  ← 纯内存！
+WRITE ino=5 "hello" ──→  staged[5] = []byte("hello")  ← 纯内存！
     │
     ▼
-FLUSH ino=4         ──→  putBlob("hello") 写新 blob
+FLUSH ino=5         ──→  putBlob("hello") 写新 blob
                          删旧 blob（GC）
                          更新 metadata.json
     │
     ▼
-RELEASE ino=4       ──→  关闭
+RELEASE ino=5       ──→  关闭
 ```
 
-### 重命名：`mv foo.txt bar.txt`
+### 创建目录：`mkdir /tmp/magic/docs`
 
 ```
-RENAME "foo.txt" → "bar.txt"
+MKDIR "docs"
     │
     ▼
-meta.Entries 删 "foo.txt" key，加 "bar.txt" key（Entry 不变）
+分配 ino=3, IsDir=true, Children={}
+加入 root.Children["docs"] = 3
     │
     ▼
 commitMetadata()  ──→  原子更新 metadata.json
 ```
 
-### 删除：`rm bar.txt`
+### 删除目录：`rmdir /tmp/magic/docs`
+
+```
+RMDIR "docs"
+    │
+    ▼
+检查 entries[3].Children 是否为空（非空返回 ENOTEMPTY）
+    │
+    ▼
+从 root.Children 删除 "docs"
+从 entries 删除 ino=3
+    │
+    ▼
+commitMetadata()  ──→  原子更新 metadata.json
+```
+
+### 重命名：`mv docs/a.txt b.txt`
+
+```
+RENAME "docs/a.txt" → "b.txt"
+    │
+    ▼
+找到源父目录 entries[3]，从 Children 删 "a.txt"
+找到目标父目录 root，加入 Children["b.txt"]（ino 不变）
+    │
+    ▼
+commitMetadata()  ──→  原子更新 metadata.json
+```
+
+### 删除文件：`rm bar.txt`
 
 ```
 UNLINK "bar.txt"
     │
     ▼
 删除关联的 blob 文件（GC）
-删除 meta.Entries["bar.txt"]
-删除 staged 缓冲
+从父目录 Children 删除 "bar.txt"
+从 entries 删除对应 ino
     │
     ▼
 commitMetadata()  ──→  原子更新 metadata.json
 ```
 
 ## 关键设计
+
+### 树形 inode 索引
+
+所有 entry（文件和目录）按 inode 号索引在 `Metadata.Entries` 中。目录通过 `Children map[string]uint64` 引用子条目，形成树结构。路径解析逐级查找 Children。
 
 ### Write ≠ Sync
 
@@ -190,9 +257,14 @@ mkdir -p /tmp/magic
 ls -l /tmp/magic
 cat /tmp/magic/hello.txt
 echo "remember the milk" > /tmp/magic/notes.txt
+mkdir /tmp/magic/docs
+echo "nested file" > /tmp/magic/docs/readme.txt
+cat /tmp/magic/docs/readme.txt
+ls /tmp/magic/docs
+mv /tmp/magic/docs/readme.txt /tmp/magic/top.txt
+rmdir /tmp/magic/docs
 chmod 755 /tmp/magic/notes.txt
-mv /tmp/magic/notes.txt /tmp/magic/todo.txt
-rm /tmp/magic/todo.txt
+rm /tmp/magic/top.txt
 cat /tmp/minifs-store/metadata.json
 ```
 
@@ -208,17 +280,17 @@ fusermount3 -u /tmp/magic
 ## 代码结构
 
 ```
-main.go（单文件，~490 行）
+main.go（单文件，~500 行）
 ├── 数据结构        BlobRef / Entry / Metadata
-├── MiniFS         核心逻辑（初始化、blob 读写、提交）
-├── FUSE 回调      GetAttr / OpenDir / Open / Create / Rename / Unlink / Chmod
+├── MiniFS         核心逻辑（初始化、路径解析、blob 读写、提交）
+├── FUSE 回调      GetAttr / OpenDir / Open / Create / Mkdir / Rmdir / Rename / Unlink / Chmod
 ├── miniFile       文件句柄（Read / Write / Flush / Fsync）
 └── main()         参数解析 + 挂载
 ```
 
 ## 不支持
 
-子目录、硬链接、符号链接、xattr、mmap、文件锁、权限模型（uid/gid）、远程存储、日志恢复。
+硬链接、符号链接、xattr、mmap、文件锁、权限模型（uid/gid）、远程存储、日志恢复。
 
 ## 进一步学习
 
